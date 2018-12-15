@@ -1,4 +1,5 @@
 #include "cuda.h"
+#include "glog/logging.h"
 #include "stdio.h"
 #include "sys/time.h"
 
@@ -32,3 +33,22 @@ void displaySummary(const char *header, float *arr, int len = 10) {
   }
   printf("\n");
 }
+
+struct Timer {
+
+  Timer() { start = cpuSecond(); }
+
+  double peek() {
+    cudaDeviceSynchronize();
+    float time_span = cpuSecond() - start;
+    start = cpuSecond();
+    return time_span * 1e3;
+  }
+
+private:
+  double start{0};
+};
+
+
+// magic number
+const int kWarpSize = 32;
