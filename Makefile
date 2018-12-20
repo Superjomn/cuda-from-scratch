@@ -1,7 +1,8 @@
 main: hello sum-array sum-matrix-2d-grid-2d-block\
 warp-divergence \
 device-info \
-expose-parallelism
+expose-parallelism \
+pinned-memory
 
 flags = -lglog --ptxas-options=-v -std=c++11
 
@@ -23,3 +24,6 @@ device-info: 5-device-info.cu
 expose-parallelism: target := expose-parallelism
 expose-parallelism: 6-expose-parallelism.cu
 	nvcc 6-$(target).cu -o $(target) $(flags)
+
+pinned-memory: 7-pinned-memory.cu
+	nvcc 7-pinned-memory.cu -o pinned-memory $(flags)

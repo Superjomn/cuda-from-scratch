@@ -49,6 +49,14 @@ private:
   double start{0};
 };
 
-
 // magic number
 const int kWarpSize = 32;
+
+__global__ void vecAdd(float *a, float *b, int nx) {
+  int idx = threadIdx.x + blockDim.x * blockIdx.x;
+  if (idx < nx) {
+    // two load
+    // one store
+    a[idx] += b[idx];
+  }
+}
