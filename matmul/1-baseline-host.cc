@@ -1,25 +1,24 @@
+#pragma once
+
 #include <iostream>
 #include "common.h"
-
-const int M = 256;
-const int N = 128;
-const int K = 64;
-const int REPEAT = 100;
 
 // A: M x K
 // B: K x N
 // C: M x N
-void matmul(const float *A, const float *B, float *C, const int M, const int N, const int K) {
+void matmul_host(const float *A, const float *B, float *C, const int M, const int N, const int K) {
     for (int m = 0; m < M; m++) {
         for (int n = 0; n < N; n++) {
+            float x{};
             for (int k = 0; k < K; k++) {
-                C[m * N + n] += A[m * K + k] * B[k * N + n];
+                x += A[m * K + k] * B[k * N + n];
             }
+            C[m * N + n] = x;
         }
     }
 }
 
-void matmul_k_interchange(const float *A, const float *B, float *C, const int M, const int N, const int K) {
+void matmul_host_k_interchanged(const float *A, const float *B, float *C, const int M, const int N, const int K) {
     for (int k = 0; k < K; k++) {
         for (int m = 0; m < M; m++) {
             for (int n = 0; n < N; n++) {
@@ -28,6 +27,9 @@ void matmul_k_interchange(const float *A, const float *B, float *C, const int M,
         }
     }
 }
+
+#ifndef NO_MAIN
+#undef NO_MAIN
 
 int main() {
     auto A = CreateHostVector(M * K, true);
@@ -38,7 +40,7 @@ int main() {
         HostTimer timer;
         timer.Start();
         for (int i = 0; i < REPEAT; i++) {
-            matmul(A.data(), B.data(), C.data(), M, N, K);
+            matmul_host(A.data(), B.data(), C.data(), M, N, K);
         }
         double duration = timer.Stop();
         std::cerr << "Duration: " << duration / REPEAT << " ms" << std::endl;
@@ -48,7 +50,7 @@ int main() {
         HostTimer timer;
         timer.Start();
         for (int i = 0; i < REPEAT; i++) {
-            matmul_k_interchange(A.data(), B.data(), C.data(), M, N, K);
+            matmul_host_k_interchanged(A.data(), B.data(), C.data(), M, N, K);
         }
         double duration = timer.Stop();
         std::cerr << "Duration: " << duration / REPEAT << " ms" << std::endl;
@@ -56,3 +58,5 @@ int main() {
 
     return 0;
 }
+
+#endif // ifndef NO_MAIN

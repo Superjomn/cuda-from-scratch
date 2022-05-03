@@ -4,7 +4,11 @@ include(CheckLanguage)
 check_language(CUDA)
 
 project(cuda_from_scratch LANGUAGES CXX CUDA)
-set(CUDA_NVCC_FLAGS "{CUDA_NVCC_FLAGS} -std=c++11}")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 function(cuda_bin TARGET)
     set(oneValueArgs "")

@@ -28,7 +28,7 @@ The second just interchange the ~k~ forloop to the outermost to avoid each ~C~ e
 The code is like
 
 #+BEGIN_SRC C++
-void matmul_k_interchange(const float *A, const float *B, float *C, const int M, const int N, const int K) {
+void matmul_host_k_interchanged(const float *A, const float *B, float *C, const int M, const int N, const int K) {
     for (int k = 0; k < K; k++) {
         for (int m = 0; m < M; m++) {
             for (int n = 0; n < N; n++) {
@@ -47,3 +47,7 @@ The lantency:
 | `matmul1`               |        1.38 |
 | `matmul1_k_interchange` |        0.25 |
 |-------------------------+-------------|
+
+** 2-baseline
+- 602us
+- 7.51ms

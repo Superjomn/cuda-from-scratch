@@ -1,10 +1,17 @@
+#pragma once
+
 #include <vector>
 #include <algorithm>
 #include <climits>
 #include <sys/time.h>
 #include <chrono>
 #include <cuda_runtime.h>
+#include <tuple>
 
+const int M = 256;
+const int N = 256;
+const int K = 256;
+const int REPEAT = 100;
 
 std::vector<float> CreateHostVector(int n, bool rand = true) {
     std::vector<float> x(n, 0.f);
@@ -17,19 +24,32 @@ std::vector<float> CreateHostVector(int n, bool rand = true) {
 }
 
 #ifdef __NVCC__
-float *CreateDeviceVector(int n, bool rand = true) {
+
+float *CreateDeviceVector(int n, std::vector<float> *host, bool rand = true) {
     float *x{};
     cudaMalloc(&x, n * sizeof(float));
 
-    auto X = CreateHostVector(n, rand);
-    cudaMemcpy(x, X.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+    *host = CreateHostVector(n, rand);
+    cudaMemcpy(x, host->data(), n * sizeof(float), cudaMemcpyHostToDevice);
+
     return x;
 }
 
 void DestroyDeviceVector(float *x) {
     cudaFree(x);
 }
+
+bool VerifyDeviceResult(const float *host_C, const float *dev_C, const int M, const int N) {
+    auto C_ = CreateHostVector(M * N);
+    cudaMemcpy(C_.data(), dev_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < M * N; i++) {
+        if (std::abs(host_C[i] - C_[i]) > 1e-5) return false;
+    }
+    return true;
+}
+
 #endif
+
 
 /**
  * Host-side Timer in ms.
