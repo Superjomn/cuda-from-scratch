@@ -1,0 +1,49 @@
+* Profile
+
+** Environment
+
+- A PC with ~intel i7 CPU~  and Nvidia ~GTX1060~ GPU,
+- All the programs are compiled with ~Debug-Release~ option.
+
+
+** 1-baseline-host
+Two naive implementation for matrix multiplication.
+
+The first is something like
+
+#+BEGIN_SRC C++
+void matmul(const float *A, const float *B, float *C, const int M, const int N, const int K) {
+    for (int m = 0; m < M; m++) {
+        for (int n = 0; n < N; n++) {
+            for (int k = 0; k < K; k++) {
+                C[m * N + n] += A[m * K + k] * B[k * N + n];
+            }
+        }
+    }
+}
+#+END_SRC
+
+The second just interchange the ~k~ forloop to the outermost to avoid each ~C~ element revisit by ~K~ times.
+
+The code is like
+
+#+BEGIN_SRC C++
+void matmul_k_interchange(const float *A, const float *B, float *C, const int M, const int N, const int K) {
+    for (int k = 0; k < K; k++) {
+        for (int m = 0; m < M; m++) {
+            for (int n = 0; n < N; n++) {
+                C[m * N + n] += A[m * K + k] * B[k * N + n];
+            }
+        }
+    }
+}
+#+END_SRC
+
+The lantency:
+
+|-------------------------+-------------|
+| sample                  | latency(ms) |
+|-------------------------+-------------|
+| `matmul1`               |        1.38 |
+| `matmul1_k_interchange` |        0.25 |
+|-------------------------+-------------|
