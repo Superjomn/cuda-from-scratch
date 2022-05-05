@@ -1,7 +1,7 @@
 #pragma once
 
 #include <iostream>
-#include "common.h"
+#include "../common.h"
 
 // A: M x K
 // B: K x N

@@ -1,0 +1,22 @@
+* Benchmark
+#+BEGIN_SRC text
+            Type  Time(%)      Time     Calls       Avg       Min       Max  Name
+ GPU activities:   49.88%  30.639ms       100  306.39us  291.15us  1.4825ms  MatrixTranspose(float*, float const *, int, int)
+                   30.85%  18.949ms       100  189.49us  159.62us  1.7276ms  MatrixTransposeCoalesced(float*, float const *, int, int)
+                   14.39%  8.8388ms       100  88.387us  85.509us  95.493us  MatrixTransposeCoalescedBank(float*, float const *, int, int)
+                    4.53%  2.7837ms         3  927.90us  1.1520us  1.4028ms  [CUDA memcpy HtoD]
+                    0.21%  129.29us         1  129.29us  129.29us  129.29us  VerifyDeviceResult(float const *, float const *, int, int*)
+                    0.14%  87.429us         1  87.429us  87.429us  87.429us  CopyMatrix(float*, float const *, int, int)
+                    0.00%  1.3120us         1  1.3120us  1.3120us  1.3120us  [CUDA memcpy DtoH]
+      API calls:   62.20%  101.92ms         3  33.973ms  637.51us  100.61ms  cudaMalloc
+                   35.94%  58.889ms         3  19.630ms  8.6475ms  30.395ms  cudaDeviceSynchronize
+                    1.17%  1.9216ms         4  480.41us  7.5890us  859.06us  cudaMemcpy
+                    0.50%  821.57us       302  2.7200us  2.3610us  20.478us  cudaLaunchKernel
+                    0.16%  260.01us        97  2.6800us     192ns  173.03us  cuDeviceGetAttribute
+                    0.02%  29.475us         1  29.475us  29.475us  29.475us  cuDeviceGetName
+                    0.01%  9.3480us         1  9.3480us  9.3480us  9.3480us  cuDeviceGetPCIBusId
+                    0.00%  2.3960us         3     798ns     397ns  1.5120us  cuDeviceGetCount
+                    0.00%  1.1060us         2     553ns     210ns     896ns  cuDeviceGet
+                    0.00%     617ns         1     617ns     617ns     617ns  cuDeviceTotalMem
+                    0.00%     333ns         1     333ns     333ns     333ns  cuDeviceGetUuid
+#+END_SRC

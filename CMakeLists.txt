@@ -23,3 +23,4 @@ function(cuda_bin TARGET)
 endfunction()
 
 add_subdirectory(matmul)
+add_subdirectory(matrix_transpose)
