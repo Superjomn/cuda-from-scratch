@@ -1,1 +1,0 @@
-cuda_bin(mat_transpose SRCS baseline.cu)
