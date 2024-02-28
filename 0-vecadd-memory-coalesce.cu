@@ -2,7 +2,11 @@
 #include "./common.cuh"
 
 template <typename T>
-__global__ void add_coalesced0(const T* a, const T* b, T* c, int n) {
+__global__ void add_coalesced0(
+    const T* __restrict__ a,
+    const T* __restrict__ b,
+    T* __restrict__ c,
+    int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < n) {
@@ -11,7 +15,11 @@ __global__ void add_coalesced0(const T* a, const T* b, T* c, int n) {
 }
 
 template <typename T>
-__global__ void add_coalesced1(const T* a, const T* b, T* c, int N) {
+__global__ void add_coalesced1(
+    const T* __restrict__ a,
+    const T* __restrict__ b,
+    T* __restrict__ c,
+    int N) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int num_threads = blockDim.x * gridDim.x;
   while (tid < N) {
@@ -21,7 +29,11 @@ __global__ void add_coalesced1(const T* a, const T* b, T* c, int N) {
 }
 
 template <typename T>
-__global__ void add_uncoalesced(const T* a, const T* b, T* c, int n) {
+__global__ void add_uncoalesced(
+    const T* __restrict__ a,
+    const T* __restrict__ b,
+    T* __restrict__ c,
+    int n) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int num_threads = blockDim.x * gridDim.x;
   int num_tasks = nvceil(n, num_threads);
@@ -36,6 +48,7 @@ __global__ void add_uncoalesced(const T* a, const T* b, T* c, int n) {
 DEFINE_int32(kernel, 0, "kernel");
 DEFINE_int32(block_size, 256, "block size");
 DEFINE_int32(num_tasks, 1, "number of tasks");
+DEFINE_bool(profile, false, "profile");
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -75,9 +88,12 @@ int main(int argc, char** argv) {
     }
   };
 
-  float time = measure_performance<void>(add_wrapped, stream);
-
-  std::cerr << "time: " << time << std::endl;
+  if (FLAGS_profile) {
+    float time = measure_performance<void>(add_wrapped, stream);
+    std::cerr << "time: " << time << std::endl;
+  } else {
+    add_wrapped(stream);
+  }
 
   auto C_host = C.toHost();
   for (int i = 0; i < M; ++i) {
