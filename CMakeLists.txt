@@ -25,4 +25,6 @@ function(cuda_bin TARGET)
 endfunction()
 
 cuda_bin(0-add SRCS 0-vecadd-memory-coalesce.cu)
+cuda_bin(1-transpose SRCS 1-matrix-transpose-coalesce.cu)
 target_link_libraries(0-add gflags)
+target_link_libraries(1-transpose gflags)
