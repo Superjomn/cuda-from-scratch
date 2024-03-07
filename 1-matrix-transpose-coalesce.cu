@@ -15,6 +15,25 @@ __global__ void transpose_read_coalesce(
   }
 }
 
+// An unroll version to expose more memory operations
+template <typename T, int TASKS_PER_THREAD>
+__global__ void transpose_read_coalesce_unroll(
+    const T* __restrict__ input,
+    T* __restrict__ output,
+    int n,
+    int m) {
+  int i = blockIdx.x * blockDim.x * TASKS_PER_THREAD +
+      threadIdx.x; // the contiguous tid
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  if (i + blockDim.x * (TASKS_PER_THREAD - 1) < n && j < m) {
+#pragma unroll
+    for (int t = 0; t < TASKS_PER_THREAD; ++t) {
+      output[(i + t * blockDim.x) * m + j] =
+          input[j * n + (i + t * blockDim.x)];
+    }
+  }
+}
+
 template <typename T>
 __global__ void transpose_write_coalesce(
     const T* __restrict__ input,
@@ -25,6 +44,24 @@ __global__ void transpose_write_coalesce(
   int j = blockIdx.y * blockDim.y + threadIdx.y;
   if (i < n && j < m) {
     output[j * n + i] = input[i * m + j];
+  }
+}
+
+template <typename T, int TASKS_PER_THREAD>
+__global__ void transpose_write_coalesce_unroll(
+    const T* __restrict__ input,
+    T* __restrict__ output,
+    int n,
+    int m) {
+  int i = blockIdx.x * TASKS_PER_THREAD * blockDim.x +
+      threadIdx.x; // the contiguous tid
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  if ((i + blockIdx.x * (TASKS_PER_THREAD - 1)) < n && j < m) {
+#pragma unroll
+    for (int t = 0; t < TASKS_PER_THREAD; ++t) {
+      output[j * n + (i + t * blockDim.x)] =
+          input[(i + t * blockDim.x) * m + j];
+    }
   }
 }
 
@@ -122,6 +159,30 @@ int main(int argc, char** argv) {
         size_t sharedSize = blockSize.x * blockSize.y * sizeof(uint64_t);
         transpose_tiled_coalesce1<uint64_t>
             <<<gridSize, blockSize, sharedSize, stream>>>(
+                input.data, output.data, FLAGS_n, FLAGS_m);
+      } break;
+      case 4: {
+        const int TASKS_PER_THREAD = 4;
+        assert(FLAGS_n * FLAGS_m % TASKS_PER_THREAD == 0);
+
+        dim3 gridSize(
+            (FLAGS_n + blockSize.x * TASKS_PER_THREAD - 1) /
+                (blockSize.x * TASKS_PER_THREAD),
+            (FLAGS_m + blockSize.y - 1) / blockSize.y);
+        transpose_read_coalesce_unroll<uint64_t, TASKS_PER_THREAD>
+            <<<gridSize, blockSize, 0, stream>>>(
+                input.data, output.data, FLAGS_n, FLAGS_m);
+      } break;
+      case 5: {
+        const int TASKS_PER_THREAD = 4;
+        assert(FLAGS_n * FLAGS_m % TASKS_PER_THREAD == 0);
+
+        dim3 gridSize(
+            (FLAGS_n + blockSize.x * TASKS_PER_THREAD - 1) /
+                (blockSize.x * TASKS_PER_THREAD),
+            (FLAGS_m + blockSize.y - 1) / blockSize.y);
+        transpose_write_coalesce_unroll<uint64_t, TASKS_PER_THREAD>
+            <<<gridSize, blockSize, 0, stream>>>(
                 input.data, output.data, FLAGS_n, FLAGS_m);
       } break;
     }
