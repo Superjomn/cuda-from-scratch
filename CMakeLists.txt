@@ -28,4 +28,6 @@ endfunction()
 cuda_bin(0-add SRCS 0-vecadd-memory-coalesce.cu)
 cuda_bin(1-transpose SRCS 1-matrix-transpose-coalesce.cu)
 cuda_bin(dump-cuda-props SRCS dump-gpu-props.cpp)
+cuda_bin(warp-shuffle-quickstart SRCS warp-shuffle-quickstart.cu)
+
 target_link_libraries(dump-cuda-props cuda cudart)
