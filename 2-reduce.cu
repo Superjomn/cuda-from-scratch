@@ -9,19 +9,21 @@ __global__ void reduce0(int* g_idata, int* g_odata, unsigned int n)
     unsigned int tid = threadIdx.x;
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
 
+    // Read a block of data into shared memory collectively
     sdata[tid] = (i < n) ? g_idata[i] : 0;
     __syncthreads();
 
-    for (unsigned int s = 1; s < blockDim.x; s *= 2)
+    for (unsigned int stride = 1; stride < blockDim.x; stride *= 2)
     {
-        // Issue: divergent warps
-        if (tid % (2 * s) == 0)
+        // ISSUE: divergent warps
+        if (tid % (2 * stride) == 0)
         {
-            sdata[tid] += sdata[tid + s];
+            sdata[tid] += sdata[tid + stride];
         }
-        __syncthreads();
+        __syncthreads(); // need to sync per level
     }
 
+    // Write the result for this block to global memory
     if (tid == 0)
     {
         g_odata[blockIdx.x] = sdata[0];
@@ -41,13 +43,13 @@ __global__ void reduce1(int* g_idata, int* g_odata, unsigned int n)
     sdata[tid] = (i < n) ? g_idata[i] : 0;
     __syncthreads();
 
-    for (unsigned int s = 1; s < blockDim.x; s *= 2)
+    for (unsigned int stride = 1; stride < blockDim.x; stride *= 2)
     {
-        int index = 2 * s * tid;
+        int index = 2 * stride * tid;
         if (index < blockDim.x)
         {
             // Issue: bank conflict
-            sdata[index] += sdata[index + s];
+            sdata[index] += sdata[index + stride];
         }
         __syncthreads();
     }
@@ -69,11 +71,11 @@ __global__ void reduce2(int* g_idata, int* g_odata, unsigned int n)
     sdata[tid] = (i < n) ? g_idata[i] : 0;
     __syncthreads();
 
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1)
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1)
     {
-        if (tid < s)
+        if (tid < stride)
         {
-            sdata[tid] += sdata[tid + s];
+            sdata[tid] += sdata[tid + stride];
         }
         __syncthreads();
     }
@@ -99,6 +101,36 @@ __global__ void reduce3(int* g_idata, int* g_odata, unsigned int n)
         if (tid < s)
         {
             sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0)
+    {
+        g_odata[blockIdx.x] = sdata[0];
+    }
+}
+
+// Avoid divergent warps
+__global__ void reduce1_1(int* g_idata, int* g_odata, unsigned int n)
+{
+    extern __shared__ int sdata[];
+    const uint32_t block_size = blockDim.x * 2;
+
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * block_size + threadIdx.x;
+
+    // sdata[tid] = (i < n) ? g_idata[i] : 0;
+    sdata[tid] = g_idata[i] + g_idata[i + blockDim.x];
+    __syncthreads();
+
+    for (unsigned int stride = 1; stride < blockDim.x; stride *= 2)
+    {
+        int index = 2 * stride * tid;
+        if (index < blockDim.x)
+        {
+            // Issue: bank conflict
+            sdata[index] += sdata[index + stride];
         }
         __syncthreads();
     }
@@ -147,39 +179,96 @@ __global__ void reduce4(int* g_idata, int* g_odata, unsigned int n)
     }
 }
 
+// using warp shuffle instruction
+// From book <Professional CUDA C Programming>
+__inline__ __device__ int warpReduce(int mySum)
+{
+    mySum += __shfl_xor(mySum, 16);
+    mySum += __shfl_xor(mySum, 8);
+    mySum += __shfl_xor(mySum, 4);
+    mySum += __shfl_xor(mySum, 2);
+    mySum += __shfl_xor(mySum, 1);
+    return mySum;
+}
+
+__global__ void reduceShfl(int* g_idata, int* g_odata, unsigned int n)
+{
+    // Helps to share data between warps
+    // size should be (blockDim.x / warpSize)
+    extern __shared__ int sdata[];
+
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Necessary to make sure shfl instruction is not used with uninitialized data
+    int mySum = idx < n ? g_idata[idx] : 0;
+
+    int lane = threadIdx.x % warpSize;
+    int warp = threadIdx.x / warpSize;
+
+    mySum = warpReduce(mySum);
+
+    if (lane == 0)
+    {
+        sdata[warp] = mySum;
+    }
+
+    __syncthreads();
+
+    // last warp reduce
+    mySum = (threadIdx.x < blockDim.x / warpSize) ? sdata[lane] : 0;
+    if (warp == 0)
+    {
+        mySum = warpReduce(mySum);
+    }
+
+    if (threadIdx.x == 0)
+    {
+        g_odata[blockIdx.x] = mySum;
+    }
+}
+
 DEFINE_int32(n, 1 << 20, "Number of elements in the input array");
 DEFINE_int32(block_size, 512, "Number of threads per block");
 DEFINE_int32(kernel, 0, "Kernel to run");
 DEFINE_bool(profile, false, "Profile the kernel");
 
-int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, kernel_fn kernel)
+int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, kernel_fn kernel, cudaStream_t stream,
+    uint32_t num_blocks = 0, uint32_t smem_size = 0)
 {
     int* idata = g_idata;
     int* odata = g_odata;
+    if (smem_size == 0)
+        smem_size = block_size * sizeof(int);
 
     // Calculate number of blocks
-    unsigned int num_blocks = (n + block_size - 1) / block_size;
+    num_blocks = (num_blocks > 0) ? num_blocks : (n + block_size - 1) / block_size;
 
     if (!FLAGS_profile)
         printf("- launching: num_blocks: %d, block_size:%d, n:%d\n", num_blocks, block_size, n);
 
+    int level = 0;
     // Launch the kernel
-    kernel<<<num_blocks, block_size>>>(idata, odata, n);
+    kernel<<<num_blocks, block_size, smem_size, stream>>>(idata, odata, n);
+    if (!FLAGS_profile)
+        cudaStreamSynchronize(stream);
+
+    level++;
 
     // Recursively reduce the partial sums
     while (num_blocks > 1)
     {
+
         std::swap(idata, odata);
         n = num_blocks;
         num_blocks = (n + block_size - 1) / block_size;
+        kernel<<<num_blocks, block_size, smem_size, stream>>>(idata, odata, n);
         if (!FLAGS_profile)
-            printf("launching: num_blocks: %d, block_size:%d, n:%d\n", num_blocks, block_size, n);
-        kernel<<<num_blocks, block_size>>>(idata, odata, n);
+            cudaStreamSynchronize(stream);
     }
 
     // Copy the final result back to the host
     int h_out;
-    cudaMemcpy(&h_out, odata, sizeof(int), cudaMemcpyDeviceToHost);
+    NVCHECK(cudaMemcpyAsync(&h_out, odata, sizeof(int), cudaMemcpyDeviceToHost, stream));
 
     return h_out;
 }
@@ -212,19 +301,32 @@ int main(int argc, char** argv)
     {
         switch (FLAGS_kernel)
         {
-        case 0: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce0); break;
-        case 1: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce1); break;
-        case 2: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce2); break;
+        case 0: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce0, stream); break;
+        case 1: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce1, stream); break;
+        case 2: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce2, stream); break;
         case 3:
         {
             grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce3);
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce3, stream, grid.x);
         }
         break;
         case 4:
         {
             grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce4);
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce4, stream, grid.x);
+        }
+        break;
+        case 5:
+        {
+            grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce1_1, stream, grid.x);
+        }
+        break;
+
+        case 6:
+        {
+            int numWarps = block.x / 32;
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduceShfl, stream, 0, numWarps);
         }
         break;
         }
@@ -245,6 +347,8 @@ int main(int argc, char** argv)
     {
         add_wrapped(stream);
     }
+
+    cudaStreamSynchronize(stream);
 
     if (!FLAGS_profile)
     {
