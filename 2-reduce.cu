@@ -2,7 +2,21 @@
 #include <cassert>
 #include <gflags/gflags.h>
 
-__global__ void reduce0(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_naive_atomic(int* g_idata, int* g_odata, unsigned int n)
+{
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gridSize = blockDim.x * gridDim.x;
+
+    int sum = 0;
+    for (unsigned int i = idx; i < n; i += gridSize)
+    {
+        sum += g_idata[i];
+    }
+
+    atomicAdd(g_odata, sum);
+}
+
+__global__ void reduce_smem_naive(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
 
@@ -33,7 +47,7 @@ __global__ void reduce0(int* g_idata, int* g_odata, unsigned int n)
 using kernel_fn = void (*)(int*, int*, unsigned int);
 
 // Avoid divergent warps
-__global__ void reduce1(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_smem_1_avoid_divergent_warps(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
 
@@ -61,7 +75,7 @@ __global__ void reduce1(int* g_idata, int* g_odata, unsigned int n)
 }
 
 // Avoid bank conflict
-__global__ void reduce2(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_smem_2_avoid_bank_conflict(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
 
@@ -86,7 +100,7 @@ __global__ void reduce2(int* g_idata, int* g_odata, unsigned int n)
     }
 }
 
-__global__ void reduce3(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_smem_3_read_two(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
 
@@ -112,7 +126,7 @@ __global__ void reduce3(int* g_idata, int* g_odata, unsigned int n)
 }
 
 // Avoid divergent warps
-__global__ void reduce1_1(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_smem_3_read_two1(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
     const uint32_t block_size = blockDim.x * 2;
@@ -151,7 +165,7 @@ __device__ void warpReduce(volatile int* sdata, int tid)
     sdata[tid] += sdata[tid + 1];
 }
 
-__global__ void reduce4(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_warp_naive(int* g_idata, int* g_odata, unsigned int n)
 {
     extern __shared__ int sdata[];
 
@@ -191,7 +205,7 @@ __inline__ __device__ int warpReduce(int mySum)
     return mySum;
 }
 
-__global__ void reduceShfl(int* g_idata, int* g_odata, unsigned int n)
+__global__ void reduce_warp_shlf(int* g_idata, int* g_odata, unsigned int n)
 {
     // Helps to share data between warps
     // size should be (blockDim.x / warpSize)
@@ -227,13 +241,102 @@ __global__ void reduceShfl(int* g_idata, int* g_odata, unsigned int n)
     }
 }
 
+// Add two elements per thread
+template <int NT>
+__global__ void reduce_warp_shlf_read_N(int* g_idata, int* g_odata, unsigned int n)
+{
+    // Helps to share data between warps
+    // size should be (blockDim.x / warpSize)
+    extern __shared__ int sdata[];
+
+    int blockSize = NT * blockDim.x;
+    unsigned int idx = blockIdx.x * blockSize + threadIdx.x;
+
+// Necessary to make sure shfl instruction is not used with uninitialized data
+#define GET_ELEM(__idx) ((__idx) < n ? g_idata[(__idx)] : 0)
+    int mySum = 0;
+
+#pragma unroll
+    for (int i = 0; i < NT; i++)
+        mySum += GET_ELEM(idx + i * blockDim.x);
+
+    int lane = threadIdx.x % warpSize;
+    int warp = threadIdx.x / warpSize;
+
+    mySum = warpReduce(mySum);
+
+    if (lane == 0)
+    {
+        sdata[warp] = mySum;
+    }
+
+    __syncthreads();
+
+    // last warp reduce
+    mySum = (threadIdx.x < blockDim.x / warpSize) ? sdata[lane] : 0;
+    if (warp == 0)
+    {
+        mySum = warpReduce(mySum);
+    }
+
+    if (threadIdx.x == 0)
+    {
+        g_odata[blockIdx.x] = mySum;
+    }
+}
+
+// each CTA atomic add on the output
+template <int NT>
+__global__ void reduce_warp_shlf_read_N_atomic(int* g_idata, int* g_odata, unsigned int n)
+{
+    // Helps to share data between warps
+    // size should be (blockDim.x / warpSize)
+    extern __shared__ int sdata[];
+
+    int blockSize = NT * blockDim.x;
+    unsigned int idx = blockIdx.x * blockSize + threadIdx.x;
+
+// Necessary to make sure shfl instruction is not used with uninitialized data
+// This only need one turn of launch
+#define GET_ELEM(__idx) ((__idx) < n ? g_idata[(__idx)] : 0)
+    int mySum = 0;
+
+#pragma unroll
+    for (int i = 0; i < NT; i++)
+        mySum += GET_ELEM(idx + i * blockDim.x);
+
+    int lane = threadIdx.x % warpSize;
+    int warp = threadIdx.x / warpSize;
+
+    mySum = warpReduce(mySum);
+
+    if (lane == 0)
+    {
+        sdata[warp] = mySum;
+    }
+
+    __syncthreads();
+
+    // last warp reduce
+    mySum = (threadIdx.x < blockDim.x / warpSize) ? sdata[lane] : 0;
+    if (warp == 0)
+    {
+        mySum = warpReduce(mySum);
+    }
+
+    if (threadIdx.x == 0)
+    {
+        atomicAdd(g_odata, mySum);
+    }
+}
+
 DEFINE_int32(n, 1 << 20, "Number of elements in the input array");
 DEFINE_int32(block_size, 512, "Number of threads per block");
 DEFINE_int32(kernel, 0, "Kernel to run");
 DEFINE_bool(profile, false, "Profile the kernel");
 
 int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, kernel_fn kernel, cudaStream_t stream,
-    uint32_t num_blocks = 0, uint32_t smem_size = 0)
+    uint32_t num_blocks, uint32_t smem_size)
 {
     int* idata = g_idata;
     int* odata = g_odata;
@@ -257,7 +360,6 @@ int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, ke
     // Recursively reduce the partial sums
     while (num_blocks > 1)
     {
-
         std::swap(idata, odata);
         n = num_blocks;
         num_blocks = (n + block_size - 1) / block_size;
@@ -265,6 +367,28 @@ int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, ke
         if (!FLAGS_profile)
             cudaStreamSynchronize(stream);
     }
+
+    // Copy the final result back to the host
+    int h_out;
+    NVCHECK(cudaMemcpyAsync(&h_out, odata, sizeof(int), cudaMemcpyDeviceToHost, stream));
+
+    return h_out;
+}
+
+int launch_reduce(int* g_idata, int* g_odata, unsigned int n, int block_size, kernel_fn kernel, cudaStream_t stream)
+{
+    int* idata = g_idata;
+    int* odata = g_odata;
+
+    uint32_t num_warps = block_size / 32;
+    int smem_size = num_warps * sizeof(int);
+
+    int num_blocks = ceil(n, block_size);
+
+    // Launch the kernel
+    kernel<<<num_blocks, block_size, smem_size, stream>>>(idata, odata, n);
+    if (!FLAGS_profile)
+        cudaStreamSynchronize(stream);
 
     // Copy the final result back to the host
     int h_out;
@@ -293,40 +417,109 @@ int main(int argc, char** argv)
         expected += host_input[i];
     }
 
-    const size_t smem_size = block.x * sizeof(int);
-
     int reduce_result = 0;
 
     auto add_wrapped = [&](cudaStream_t stream) -> void
     {
         switch (FLAGS_kernel)
         {
-        case 0: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce0, stream); break;
-        case 1: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce1, stream); break;
-        case 2: reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce2, stream); break;
+        case 0:
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_smem_naive, stream, 0, 0);
+            break;
+        case 1:
+            reduce_result = launch_reduce(
+                input.data, output.data, FLAGS_n, block.x, reduce_smem_1_avoid_divergent_warps, stream, 0, 0);
+            break;
+        case 2:
+            reduce_result = launch_reduce(
+                input.data, output.data, FLAGS_n, block.x, reduce_smem_2_avoid_bank_conflict, stream, 0, 0);
+            break;
         case 3:
         {
-            grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce3, stream, grid.x);
+            grid.x = ceil(FLAGS_n, block.x * 2);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_smem_3_read_two, stream, grid.x, 0);
         }
         break;
         case 4:
         {
-            grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce4, stream, grid.x);
+            grid.x = ceil(FLAGS_n, block.x * 2);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_naive, stream, grid.x, 0);
         }
         break;
         case 5:
         {
-            grid.x = (FLAGS_n + block.x * 2 - 1) / (block.x * 2);
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce1_1, stream, grid.x);
+            grid.x = ceil(FLAGS_n, block.x * 2);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_smem_3_read_two1, stream, grid.x, 0);
         }
         break;
 
-        case 6:
+        case 10:
         {
             int numWarps = block.x / 32;
-            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduceShfl, stream, 0, numWarps);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf, stream, 0, numWarps);
+        }
+        break;
+        case 11:
+        {
+            grid.x = ceil(FLAGS_n, block.x * 2);
+            reduce_result = launch_reduce(
+                input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N<2>, stream, grid.x, 0);
+        }
+        break;
+        case 12:
+        {
+            grid.x = ceil(FLAGS_n, block.x * 4);
+            reduce_result = launch_reduce(
+                input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N<4>, stream, grid.x, 0);
+        }
+        break;
+        case 13:
+        {
+            grid.x = ceil(FLAGS_n, block.x * 8);
+            reduce_result = launch_reduce(
+                input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N<8>, stream, grid.x, 0);
+        }
+        break;
+        case 20:
+        {
+            grid.x = ceil(FLAGS_n, block.x);
+            reduce_result = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_naive_atomic, stream);
+        }
+        break;
+        case 70:
+        {
+            constexpr int NT = 1;
+            grid.x = ceil(FLAGS_n, block.x * NT);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N_atomic<NT>, stream);
+        }
+        break;
+        case 71:
+        {
+            constexpr int NT = 2;
+            grid.x = ceil(FLAGS_n, block.x * NT);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N_atomic<NT>, stream);
+        }
+        break;
+        case 72:
+        {
+            constexpr int NT = 4;
+            grid.x = ceil(FLAGS_n, block.x * NT);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N_atomic<NT>, stream);
+        }
+        break;
+        case 73:
+        {
+            constexpr int NT = 8;
+            grid.x = ceil(FLAGS_n, block.x * NT);
+            reduce_result
+                = launch_reduce(input.data, output.data, FLAGS_n, block.x, reduce_warp_shlf_read_N_atomic<NT>, stream);
         }
         break;
         }
@@ -338,7 +531,7 @@ int main(int argc, char** argv)
     if (FLAGS_profile)
     {
         std::cerr << "GTX 3080 memory bandwidth: 760GB/s" << std::endl;
-        float time = measure_performance<void>(add_wrapped, stream);
+        float time = measure_performance<void>(add_wrapped, stream, 1000);
         float memory_bandwidth = FLAGS_n * sizeof(int) / time / 1e9 * 1e3;
         std::cerr << "Kernel: " << FLAGS_kernel << " time: " << time << " ms"
                   << " bandwidth: " << memory_bandwidth << " GB/s" << std::endl;
