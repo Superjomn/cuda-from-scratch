@@ -4,13 +4,16 @@ import subprocess
 import matplotlib.pyplot as plt
 
 kernels = {
-    0: 'smem_naive',
-    20: 'atomic_naive',
-    1: "reduce_smem_1_avoid_divergent_warps",
-    11: "reduce_warp_shlf_read_2",
-    12: "reduce_warp_shlf_read_4",
-    71: "reduce_warp_shlf_read_2_atomic",
-    73: "reduce_warp_shlf_read_8_atomic",
+    0: ('smem_naive', ('blue', '-')),
+    1: ("reduce_smem_1_avoid_divergent_warps", ('blue', '-.')),
+    3: ("reduce_smem_3_read_two", ('blue', '^')),
+    10: ("reduce_warp_shlf", ('red', '-')),
+    11: ("reduce_warp_shlf_read_2", ('red', '-.')),
+    12: ("reduce_warp_shlf_read_4", ('red', '^')),
+    20: ('atomic_naive', ('green', '-')),
+    70: ("reduce_warp_shlf_read_1_atomic", ('green', '-.')),
+    71: ("reduce_warp_shlf_read_2_atomic", ('green', 'v')),
+    73: ("reduce_warp_shlf_read_8_atomic", ('green', '^')),
 }
 
 
@@ -46,21 +49,29 @@ def batch_profile(kernel: int):
 def profile():
 
     def get_data():
-        for kernel, kernel_name in kernels.items():
-            data = [kernel_name, []]
+        for kernel, (kernel_name, style) in kernels.items():
+            data = [kernel_name, [], style]
 
             for n, bandwidth in batch_profile(kernel):
                 data[1].append((n, bandwidth))
             yield data
 
-    plt.figure(dpi=300)
+    plt.figure(dpi=300, figsize=(10, 6))
 
-    for kernel, values in get_data():
+    for kernel, values, style in get_data():
         x, y = zip(*values)
-        plt.plot(x, y, label=kernel)
+        kwargs = {}
+        if style[1] in ['-', '-.', '--', ':']:
+            kwargs['linestyle'] = style[1]
+        else:
+            kwargs['marker'] = style[1]
+
+        plt.plot(x, y, label=kernel, color=style[0], **kwargs)
 
     plt.legend()
     plt.show()
+    plt.ylabel("Bandwidth (GB/s)")
+    plt.xlabel("n")
     plt.savefig("profile-reduce.png")
 
 
