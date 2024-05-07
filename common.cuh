@@ -9,13 +9,9 @@
 #define NVCHECK(ret) \
   { gpuAssert((ret), __FILE__, __LINE__); }
 
-inline void gpuAssert(cudaError_t code,
-                      const char* file,
-                      int line,
-                      bool abort = true) {
+inline void gpuAssert(cudaError_t code, const char* file, int line, bool abort = true) {
   if (code != cudaSuccess) {
-    fprintf(
-        stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
     if (abort) exit(code);
   }
 }
@@ -80,10 +76,7 @@ class Matrix {
   }
 
   void assign(const value_type* host_data) {
-    NVCHECK(cudaMemcpy(data,
-                       host_data,
-                       rows * cols * sizeof(value_type),
-                       cudaMemcpyHostToDevice));
+    NVCHECK(cudaMemcpy(data, host_data, rows * cols * sizeof(value_type), cudaMemcpyHostToDevice));
   }
 
   void assign(const value_type& value) {
@@ -104,8 +97,8 @@ class Matrix {
 
   void randomize_float() {
     std::vector<float> host_data(rows * cols);
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // std::random_device rd;
+    std::mt19937 gen(1);
     std::uniform_real_distribution<float> dis(0, 1);
     for (int i = 0; i < rows * cols; ++i) {
       host_data[i] = dis(gen);
@@ -113,9 +106,7 @@ class Matrix {
     assign(reinterpret_cast<value_type*>(host_data.data()));
   }
 
-  void zero() {
-    NVCHECK(cudaMemset(data, 0, rows * cols * sizeof(value_type)));
-  }
+  void zero() { NVCHECK(cudaMemset(data, 0, rows * cols * sizeof(value_type))); }
 
   void ordered() {
     std::vector<value_type> host_data(rows * cols);
@@ -135,10 +126,8 @@ class Matrix {
 
   std::vector<value_type> toHost() const {
     std::vector<value_type> host_data(rows * cols);
-    NVCHECK(cudaMemcpy(host_data.data(),
-                       data,
-                       rows * cols * sizeof(value_type),
-                       cudaMemcpyDeviceToHost));
+    NVCHECK(cudaMemcpy(
+        host_data.data(), data, rows * cols * sizeof(value_type), cudaMemcpyDeviceToHost));
     return host_data;
   }
 

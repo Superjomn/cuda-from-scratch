@@ -11,4 +11,5 @@ BinPackParameters: false
 BinPackArguments: false
 IncludeBlocks: Preserve
 IncludeIsMainSourceRegex: (\.cu)$
+ColumnLimit:     100
 ...
