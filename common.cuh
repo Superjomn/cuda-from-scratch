@@ -28,6 +28,7 @@ void check_last(const char* const file, const int line) {
 }
 
 // Borrowed from https://leimao.github.io/blog/CUDA-Coalesced-Memory-Access/
+// Result is in millisecond
 template <class T>
 float measure_performance(std::function<T(cudaStream_t)> bound_function,
                           cudaStream_t stream,

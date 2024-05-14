@@ -12,7 +12,6 @@ Memory Throughput: 0.543278 GB/s
 __global__ void gemm_naive(const float* __restrict__ A,
                            const float* __restrict__ B,
                            float* __restrict__ C,
-                           float* __restrict__ D,
                            int M,
                            int N,
                            int K,
@@ -31,7 +30,7 @@ __global__ void gemm_naive(const float* __restrict__ A,
         sum += A[m * K + k] * B[k * N + n];  // A[m, k] * B[k, n]
       }
       // Issue: C is not visited in a coalesced manner
-      C[m * N + n] = alpha * sum + D[m * N + n];
+      C[m * N + n] = alpha * sum + C[m * N + n];
     }
   }
 }
@@ -45,7 +44,6 @@ Memory Throughput: 4.151082 GB/s
 __global__ void gemm_coalesced(const float* __restrict__ A,
                                const float* __restrict__ B,
                                float* __restrict__ C,
-                               float* __restrict__ D,
                                int M,
                                int N,
                                int K,
@@ -63,7 +61,7 @@ __global__ void gemm_coalesced(const float* __restrict__ A,
         sum += A[m * K + k] * B[k * N + n];
       }
       // C is visited in a coalesced manner now
-      C[m * N + n] = alpha * sum + beta * D[m * N + n];
+      C[m * N + n] = alpha * sum + beta * C[m * N + n];
     }
   }
 }
@@ -74,7 +72,6 @@ template <int READ_N>
 __global__ void gemm_coalesced_multiple(const float* __restrict__ A,
                                         const float* __restrict__ B,
                                         float* __restrict__ C,
-                                        float* __restrict__ D,
                                         int M,
                                         int N,
                                         int K,
@@ -97,7 +94,7 @@ __global__ void gemm_coalesced_multiple(const float* __restrict__ A,
         }
       }
       // C is visited in a coalesced manner now
-      C[m * N + n] = alpha * sum + beta * D[m * N + n];
+      C[m * N + n] = alpha * sum + beta * C[m * N + n];
     }
   }
 }
@@ -114,72 +111,64 @@ template <int BLOCK = 32>
 __global__ void gemm_tiled_smem(float* __restrict__ A,
                                 float* __restrict__ B,
                                 float* __restrict__ C,
-                                float* __restrict__ D,
                                 int M,
                                 int N,
                                 int K,
                                 float alpha,
                                 float beta) {
-  const int block_row = blockIdx.y * BLOCK;
-  const int block_col = blockIdx.x * BLOCK;
-  const int thread_row = threadIdx.y;
-  const int thread_col = threadIdx.x;
+  // Each thread block helps to compute a C block
+  // block offset: (cRow, cCol)
+  const int cRow = blockIdx.y;
+  const int cCol = blockIdx.x;
 
-  __shared__ float A_tile[BLOCK][BLOCK];
-  __shared__ float B_tile[BLOCK][BLOCK];
+  // Allocate shared memory for a single A block and B block
+  __shared__ float As[BLOCK][BLOCK];
+  __shared__ float Bs[BLOCK][BLOCK];
 
-  float sum = 0.0;
+  const int threadRow = threadIdx.x / BLOCK;
+  const int threadCol = threadIdx.x % BLOCK;  // continuous
 
-  for (int block_k = 0; block_k < K; block_k += BLOCK) {
-    // Load A_tile
-    int a_row = block_row + thread_row;
-    int a_col = block_k + thread_col;
+  // Move the pointers to the starting position within the block
+  A += (cRow * BLOCK) * K;
+  B += cCol * BLOCK;
+  C += (cRow * BLOCK) * N + cCol * BLOCK;
 
-    if (a_row < M && a_col < K)
-      A_tile[thread_row][thread_col] = A[a_row * K + a_col];
-    else
-      A_tile[thread_row][thread_col] = 0.0;
+  float sum = 0.;
+  for (int blockIdx = 0; blockIdx < K; blockIdx += BLOCK) {
+    // Load the A and B block into shared memory
+    As[threadRow][threadCol] = A[threadRow * K + threadCol];
+    Bs[threadRow][threadCol] = B[threadRow * N + threadCol];
 
-    // Load B_tile, transposing B for coalesced access in multiplication
-    int b_row = block_k + thread_row;
-    int b_col = block_col + thread_col;
+    // Move the pointers to the next block
+    A += BLOCK;
+    B += BLOCK * N;
 
-    // Latency: 15.951237 ms
-    // B_tile[thread_row][thread_col] = (b_row < K && b_col < N) ? B[b_row * N + b_col] : 0.0;
-
-    // Latency: 13.997015 ms
-    if (b_row < K && b_col < N)
-      B_tile[thread_row][thread_col] = B[b_row * N + b_col];
-    else
-      B_tile[thread_row][thread_col] = 0.0;
-
+    // Wait for all the threads to finish loading
     __syncthreads();
 
-    // Multiply tiles
+    // Compute the result of C_tile = A_tile * B_tile
     for (int k = 0; k < BLOCK; ++k) {
-      sum += A_tile[thread_row][k] * B_tile[k][thread_col];
+      sum += As[threadRow][k] * Bs[k][threadCol];
     }
 
+    // Wait for all the threads to finish computing
     __syncthreads();
   }
 
-  // Write back to C
-  int c_row = block_row + thread_row;
-  int c_col = block_col + thread_col;
-  if (c_row < M && c_col < N) C[c_row * N + c_col] = alpha * sum + beta * D[c_row * N + c_col];
+  // Store the result back to the global memory
+  C[threadRow * N + threadCol] = alpha * sum + beta * C[threadRow * N + threadCol];
 }
 
 void cublas_gemm(const float* A,
                  const float* B,
                  float* C,
-                 float* D,
                  int M,
                  int N,
                  int K,
                  float alpha,
                  float beta,
                  cublasHandle_t handle) {
-  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha, A, M, B, K, &beta, C, M);
+  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, A, K, &beta, C, N);
 }
 
 DEFINE_int32(M, 4096, "M");
@@ -194,8 +183,8 @@ int main(int argc, char** argv) {
 
   printf("M = %d, N = %d, K = %d\n", FLAGS_M, FLAGS_N, FLAGS_K);
 
-  using kernel_t = std::function<void(
-      float*, float*, float*, float*, int, int, int, float, float, cudaStream_t)>;
+  using kernel_t =
+      std::function<void(float*, float*, float*, int, int, int, float, float, cudaStream_t)>;
 
   std::vector<std::tuple<std::string, kernel_t>> kernels;
 
@@ -217,19 +206,17 @@ int main(int argc, char** argv) {
       [&](float* A,
           float* B,
           float* C,
-          float* D,
           int M,
           int N,
           int K,
           float alpha,
           float beta,
-          cudaStream_t stream) -> void { cublas_gemm(A, B, C, D, M, N, K, alpha, beta, handle); }));
+          cudaStream_t stream) -> void { cublas_gemm(A, B, C, M, N, K, alpha, beta, handle); }));
 
   kernels.push_back(std::make_tuple("gemm_naive",
                                     [](float* A,
                                        float* B,
                                        float* C,
-                                       float* D,
                                        int M,
                                        int N,
                                        int K,
@@ -239,13 +226,12 @@ int main(int argc, char** argv) {
                                       dim3 block(32, 32);
                                       dim3 grid(ceil(FLAGS_M, block.x), ceil(FLAGS_N, block.y));
                                       gemm_naive<<<grid, block, 0, stream>>>(
-                                          A, B, C, D, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
+                                          A, B, C, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
                                     }));
   kernels.push_back(std::make_tuple("gemm_coalesced",
                                     [](float* A,
                                        float* B,
                                        float* C,
-                                       float* D,
                                        int M,
                                        int N,
                                        int K,
@@ -255,14 +241,13 @@ int main(int argc, char** argv) {
                                       dim3 block(32, 32);
                                       dim3 grid(ceil(FLAGS_M, block.x), ceil(FLAGS_N, block.y));
                                       gemm_coalesced<<<grid, block, 0, stream>>>(
-                                          A, B, C, D, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
+                                          A, B, C, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
                                     }));
 
   kernels.push_back(std::make_tuple("gemm_coalesced_multiple",
                                     [](float* A,
                                        float* B,
                                        float* C,
-                                       float* D,
                                        int M,
                                        int N,
                                        int K,
@@ -272,14 +257,13 @@ int main(int argc, char** argv) {
                                       dim3 block(32, 32);
                                       dim3 grid(ceil(FLAGS_M, block.x), ceil(FLAGS_N, block.y));
                                       gemm_coalesced_multiple<4><<<grid, block, 0, stream>>>(
-                                          A, B, C, D, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
+                                          A, B, C, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
                                     }));
 
   kernels.push_back(std::make_tuple("gemm_tiled_smem2x32",
                                     [](float* A,
                                        float* B,
                                        float* C,
-                                       float* D,
                                        int M,
                                        int N,
                                        int K,
@@ -289,7 +273,7 @@ int main(int argc, char** argv) {
                                       dim3 block(32, 32);
                                       dim3 grid(ceil(FLAGS_M, block.x), ceil(FLAGS_N, block.y));
                                       gemm_tiled_smem<32><<<grid, block, 0, stream>>>(
-                                          A, B, C, D, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
+                                          A, B, C, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta);
                                     }));
 
   // Display helper
@@ -308,11 +292,9 @@ int main(int argc, char** argv) {
   Matrix<float> A(FLAGS_M, FLAGS_K);
   Matrix<float> B(FLAGS_K, FLAGS_N);
   Matrix<float> C(FLAGS_M, FLAGS_N);
-  Matrix<float> D(FLAGS_M, FLAGS_N);
 
   A.randomize_float();
   B.randomize_float();
-  D.randomize_float();
   C.zero();
 
   cudaStream_t stream;
@@ -326,16 +308,18 @@ int main(int argc, char** argv) {
 
   auto kernel_wrapper = [&](cudaStream_t stream) -> void {
     assert(FLAGS_kernel < kernels.size());
-    kernel(A.data, B.data, C.data, D.data, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta, stream);
+    kernel(A.data, B.data, C.data, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta, stream);
   };
 
   if (FLAGS_profile) {
     float time = measure_performance<void>(kernel_wrapper, stream, 100);
+    float flops = (2 * FLAGS_M * FLAGS_N * FLAGS_K + FLAGS_M * FLAGS_N) / time / 1000;
+    float bytes =
+        (FLAGS_M * FLAGS_K + FLAGS_K * FLAGS_N + FLAGS_M * FLAGS_N) * sizeof(float) / time / 1000;
+
     printf("Latency: %f ms\n", time);
-    printf("Compute Throughput: %f GFLOPS\n", 2. * FLAGS_M * FLAGS_N * FLAGS_K / time / 1e6);
-    printf(
-        "Memory Throughput: %f GB/s\n",
-        (FLAGS_M * FLAGS_K + FLAGS_K * FLAGS_N + FLAGS_M * FLAGS_N) * sizeof(float) / time / 1e6);
+    printf("Compute Throughput: %f GFLOPS\n", flops);
+    printf("Memory Throughput: %f GB/s\n", bytes);
   } else {
     kernel_wrapper(stream);
   }
@@ -345,7 +329,7 @@ int main(int argc, char** argv) {
     Matrix<float> C_ref(FLAGS_M, FLAGS_N);
     C_ref.zero();
 
-    cublas_gemm(A.data, B.data, C_ref.data, D.data, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta, handle);
+    cublas_gemm(A.data, B.data, C_ref.data, FLAGS_M, FLAGS_N, FLAGS_K, alpha, beta, handle);
 
     auto C_data = C.toHost();
     auto C_ref_data = C_ref.toHost();
