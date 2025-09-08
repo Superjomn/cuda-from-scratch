@@ -7,10 +7,10 @@ repos:
     rev: v1.1.13
     hooks:
     -   id: remove-crlf
--   repo: https://github.com/pre-commit/mirrors-yapf
-    rev: v0.32.0
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.5 # Use the latest version
     hooks:
-    -   id: yapf
+    -   id: ruff-format
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.1.0
     hooks:
