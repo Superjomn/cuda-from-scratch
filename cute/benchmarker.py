@@ -27,6 +27,12 @@ def benchmark(callable, *, num_warmups, num_iterations, amount: int):
     return avg_time, throughput
 
 
+def test_elementwise(callable, A, B, C):
+    C.zero_()
+    callable()
+    assert torch.allclose(C, A + B)
+
+
 def profile_elementwise():
     import cutlass
     import cutlass.cute as cute
@@ -69,6 +75,17 @@ def profile_elementwise():
             op=elt.add,
         )
 
+    @cache
+    def compile_tiled_copy_kernel(shape: list[int], copy_bits: int = 128):
+        _tensor = make_template_tensor(shape)
+        return cute.compile(
+            elt.elementwise_add_tiled_copy,
+            _tensor,
+            _tensor,
+            _tensor,
+            copy_bits=copy_bits,
+        )
+
     def perfile_shape(shape):
         A = torch.randn(shape, device="cuda", dtype=torch.float16).contiguous()
         B = torch.randn(shape, device="cuda", dtype=torch.float16).contiguous()
@@ -80,6 +97,7 @@ def profile_elementwise():
         _naive_elementwise_1d = compile_naive_kernel(shape)
         _elementwise_1d_tiled = compile_tiled_kernel(shape)
         _elementwise_1d_tiled_tv_layout = compile_tv_layout_kernel(shape)
+        _elementwise_add_tiled_copy = compile_tiled_copy_kernel(shape, copy_bits=128)
 
         # Helper function to convert tensors using CuTe DSL pattern
         def make_cute_tensors(*tensors):
@@ -99,11 +117,31 @@ def profile_elementwise():
             ]
             _elementwise_1d_tiled_tv_layout(*make_cute_tensors(*reshaped))
 
+        def tiled_copy_task(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor):
+            reshaped = [
+                elt.reshape_torch_Tensor_for_tv_layout(t, 4 * 32, 128)
+                for t in (A, B, C)
+            ]
+            _elementwise_add_tiled_copy(*make_cute_tensors(*reshaped))
+
         naive_task = partial(naive_task, A, B, C)
         tiled_task = partial(tiled_task, A, B, C)
         tv_layout_task = partial(tv_layout_task, A, B, C)
+        tiled_copy_task = partial(tiled_copy_task, A, B, C)
 
         amount = A.numel() * 2  # 2 bytes per element
+
+        # check correctness
+        print("Checking correctness...")
+        print("Naive task...")
+        test_elementwise(naive_task, A, B, C)
+        print("Tiled task...")
+        test_elementwise(tiled_task, A, B, C)
+        print("TV layout task...")
+        test_elementwise(tv_layout_task, A, B, C)
+        print("Tiled copy task...")
+        test_elementwise(tiled_copy_task, A, B, C)
+        print("Correctness checked.")
 
         torch_time, torch_throughput = benchmark(
             torch_task, num_warmups=5, num_iterations=100, amount=amount
@@ -117,12 +155,15 @@ def profile_elementwise():
         tv_layout_time, tv_layout_throughput = benchmark(
             tv_layout_task, num_warmups=5, num_iterations=100, amount=amount
         )
-
+        tiled_copy_time, tiled_copy_throughput = benchmark(
+            tiled_copy_task, num_warmups=5, num_iterations=100, amount=amount
+        )
         record = {
             ("torch", torch_time, torch_throughput),
             ("naive", naive_time, naive_throughput),
             ("tiled", tiled_time, tiled_throughput),
             ("tv_layout", tv_layout_time, tv_layout_throughput),
+            ("tiled_copy", tiled_copy_time, tiled_copy_throughput),
         }
 
         print(f"Shape: {shape}:")
